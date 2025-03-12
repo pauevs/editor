@@ -33,7 +33,7 @@ class ModalInputDialog(tk.Toplevel):
         self.protocol("WM_DELETE_WINDOW", self.on_close)
         self.entry.focus_set()
         self.wait_window(self)
-        
+
     def on_ok(self):
         try:
             value = int(self.entry.get())
@@ -98,3 +98,131 @@ class ImageEditor:
         tk.Button(self.color_frame, text="Красный канал", command=lambda: self.show_channel(2)).pack(side=tk.LEFT)
         tk.Button(self.color_frame, text="Зелёный канал", command=lambda: self.show_channel(1)).pack(side=tk.LEFT)
         tk.Button(self.color_frame, text="Синий канал", command=lambda: self.show_channel(0)).pack(side=tk.LEFT)
+
+    # Утилита для ввода числа с помощью модального окна
+    def ask_integer(self, title, prompt, minval=None, maxval=None, initialvalue=None):
+        return ModalInputDialog(self.root, title, prompt, minval, maxval, initialvalue).result
+
+    def load_image(self):
+        file_path = filedialog.askopenfilename(filetypes=[("Изображения", "*.png;*.jpg")])
+        if not file_path:
+            return
+        self.image = cv2.imread(file_path)
+        if self.image is None:
+            messagebox.showerror("Ошибка", "Не удалось загрузить изображение")
+            return
+        self.original_image = self.image.copy()
+        self.processed_image = self.image.copy()
+        self.file_path = file_path
+        self.undo_stack = []
+        self.display_image()
+
+    def capture_image(self):
+        cap = cv2.VideoCapture(0)
+        if not cap.isOpened():
+            messagebox.showerror("Ошибка", "Не удалось открыть веб-камеру")
+            return
+        ret, frame = cap.read()
+        cap.release()
+        if not ret:
+            messagebox.showerror("Ошибка", "Не удалось сделать снимок")
+            return
+        self.image = frame
+        self.original_image = self.image.copy()
+        self.processed_image = self.image.copy()
+        self.undo_stack = []
+        self.display_image()
+
+    def display_image(self):
+        if self.processed_image is None:
+            return
+        # Конвертация BGR -> RGB и создание PhotoImage
+        image_rgb = cv2.cvtColor(self.processed_image, cv2.COLOR_BGR2RGB)
+        image_pil = Image.fromarray(image_rgb)
+        self.tk_image = ImageTk.PhotoImage(image_pil)
+        self.canvas.delete("all")
+        self.canvas.update_idletasks()
+        canvas_width = self.canvas.winfo_width()
+        canvas_height = self.canvas.winfo_height()
+        img_width = self.tk_image.width()
+        img_height = self.tk_image.height()
+        # Устанавливаем область прокрутки равной фактическому размеру изображения
+        self.canvas.config(scrollregion=(0, 0, img_width, img_height))
+        if img_width < canvas_width and img_height < canvas_height:
+            # Если изображение меньше окна, рисуем его по центру
+            x = (canvas_width - img_width) // 2
+            y = (canvas_height - img_height) // 2
+            self.canvas.create_image(x, y, anchor="nw", image=self.tk_image)
+        else:
+            # Если изображение больше, размещаем его с координатами (0,0)
+            self.canvas.create_image(0, 0, anchor="nw", image=self.tk_image)
+            # Центрируем вид, если возможно
+            if img_width > canvas_width:
+                xfrac = (img_width/2 - canvas_width/2) / (img_width - canvas_width)
+                self.canvas.xview_moveto(xfrac)
+            if img_height > canvas_height:
+                yfrac = (img_height/2 - canvas_height/2) / (img_height - canvas_height)
+                self.canvas.yview_moveto(yfrac)
+
+    def resize_image(self):
+        if self.processed_image is None:
+            return
+        width = self.ask_integer("Изменение размера", "Введите ширину:", 1, None, self.processed_image.shape[1])
+        height = self.ask_integer("Изменение размера", "Введите высоту:", 1, None, self.processed_image.shape[0])
+        if width is not None and height is not None:
+            self.undo_stack.append(self.processed_image.copy())
+            self.processed_image = cv2.resize(self.processed_image, (width, height))
+            self.display_image()
+
+    def decrease_brightness(self):
+        if self.processed_image is None:
+            return
+        # Запрашиваем процент затемнения: 0% – исходное изображение, 100% – полностью чёрное
+        value = self.ask_integer("Яркость", "Введите процент затемнения (0 - исходная, 100 - черное):", 0, 100, 0)
+        if value is not None:
+            self.undo_stack.append(self.processed_image.copy())
+            factor = (100 - value) / 100.0
+            # Применяем коэффициент ко всем пикселям
+            self.processed_image = (self.processed_image.astype(np.float32) * factor).clip(0, 255).astype(np.uint8)
+            self.display_image()
+
+    def draw_circle(self):
+        if self.processed_image is None:
+            return
+        # Используем собственное диалоговое окно, чтобы 0 считалось корректным вводом
+        x = self.ask_integer("Круг", "Введите X координату:", None, None, 0)
+        y = self.ask_integer("Круг", "Введите Y координату:", None, None, 0)
+        radius = self.ask_integer("Круг", "Введите радиус:", 1, None, 10)
+        if x is not None and y is not None and radius is not None:
+            self.undo_stack.append(self.processed_image.copy())
+            # Рисуем красный круг (цвет в формате BGR: (0, 0, 255))
+            cv2.circle(self.processed_image, (x, y), radius, (0, 0, 255), 2)
+            self.display_image()
+
+    def show_channel(self, channel):
+        if self.processed_image is None:
+            return
+        self.undo_stack.append(self.processed_image.copy())
+        channel_image = np.zeros_like(self.processed_image)
+        channel_image[:, :, channel] = self.processed_image[:, :, channel]
+        self.processed_image = channel_image
+        self.display_image()
+
+    def undo(self):
+        if self.undo_stack:
+            self.processed_image = self.undo_stack.pop()
+            self.display_image()
+        else:
+            messagebox.showinfo("Отмена", "Нет действий для отмены")
+
+    # Прокрутка колесом мыши: вертикально или (с зажатым Shift) горизонтально
+    def on_mousewheel(self, event):
+        self.canvas.yview_scroll(-1 * int(event.delta/120), "units")
+    
+    def on_shift_mousewheel(self, event):
+        self.canvas.xview_scroll(-1 * int(event.delta/120), "units")
+
+if __name__ == "__main__":
+    root = tk.Tk()
+    app = ImageEditor(root)
+    root.mainloop()
